@@ -134,14 +134,14 @@ class SegNet(nn.Module):
             x = self.unpooling_layers[i](x, pool_indices[-(i+1)], output_size=sizes[-(i+1)])
             if i == 3:  # Last 2 blocks with 2 convolutions each
                 for _ in range(2):
-                    x = checkpoint(self.decoder_layers[layer_idx], x)
+                    x = self.decoder_layers[layer_idx](x)
                     x = F.relu(x)
                     layer_idx += 1
                     x = self.decoder_layers[layer_idx](x)
                     x = F.relu(x)
                     layer_idx += 1
             elif i == 4:
-                x = checkpoint(self.decoder_layers[layer_idx],x)
+                x = self.decoder_layers[layer_idx](x)
                 x = F.relu(x)
                 layer_idx += 1
                 x = self.decoder_layers[layer_idx](x)
@@ -150,7 +150,7 @@ class SegNet(nn.Module):
                 x = self.decoder_layers[layer_idx](x)              
             else:  # First 3 blocks with 3 convolutions each
                 for _ in range(3):
-                    x = checkpoint(self.decoder_layers[layer_idx],x)
+                    x = self.decoder_layers[layer_idx](x)
                     x = F.relu(x)
                     layer_idx += 1
                     x = self.decoder_layers[layer_idx](x)
@@ -226,7 +226,10 @@ class Train_Test:
         
         for epoch in range(1, run_epoch + 1):
             sum_loss = 0.0
-
+            class_correct = np.zeros(len(self.classes))
+            class_total = np.zeros(len(self.classes))
+            total_pixels = 0
+            correct_pixels = 0
             for j, data in tqdm(enumerate(self.trainloader, 1), total=len(self.trainloader)):
                 images, labels = data
                 images = images.to(self.device, dtype=torch.float32)
@@ -238,10 +241,26 @@ class Train_Test:
                 self.optimizer.step()
 
                 sum_loss += loss.item()
-        
+                predicted = torch.argmax(output_softmax, 1)
+                true_labels = torch.argmax(labels, dim=1)
+                predicted = predicted.view(-1)
+                true_labels = true_labels.view(-1)
+                total_pixels += true_labels.numel()
+                correct_pixels += (predicted == true_labels).sum().item()
+                
+                for c in range(len(self.classes)):
+                    class_total[c] += (true_labels == c).sum().item()
+                    class_correct[c] += ((predicted == c) & (true_labels == c)).sum().item()
+                        
+                
+
+            
+            acc_train = correct_pixels / total_pixels
+            class_acc = np.divide(class_correct, class_total, out=np.zeros_like(class_correct, dtype=float), where=class_total!=0)
+            class_avg_acc_train = np.mean(class_acc)
                 
             loss_epoch = sum_loss/len(self.trainloader)
-            writer.add_scalar('Metrics/Loss/Train', loss_epoch, epoch)
+            
             print('Average loss @ epoch {}: {}'.format(epoch, loss_epoch))
 
             #Evaluate the test set
@@ -249,7 +268,6 @@ class Train_Test:
             test_loss = 0.0
             correct_pixels = 0
             total_pixels = 0
-            iou_scores = []
             
             class_correct = np.zeros(len(self.classes))
             class_total = np.zeros(len(self.classes))
@@ -274,20 +292,18 @@ class Train_Test:
                         class_total[c] += (true_labels == c).sum().item()
                         class_correct[c] += ((predicted == c) & (true_labels == c)).sum().item()
                         
-                    pred = predicted.cpu()
-                    label = true_labels.cpu()
-                    iou_scores.append(self.compute_miou(pred, label, len(self.classes)))
+                
 
             test_loss /= len(self.testloader)
             acc = correct_pixels / total_pixels
             class_acc = np.divide(class_correct, class_total, out=np.zeros_like(class_correct, dtype=float), where=class_total!=0)
             class_avg_acc = np.mean(class_acc)
-            avg_miou = np.mean(iou_scores)
             
-            writer.add_scalars('Loss', {'train': loss_epoch, 'test': test_loss}, epoch)            
-            writer.add_scalar('Metrics/GA/Val', acc, epoch)
-            writer.add_scalar('Metrics/CAA/Val', class_avg_acc, epoch)
-            writer.add_scalar('Metrics/mIoU/Val', avg_miou, epoch)
+            
+            writer.add_scalars('Loss', {'train': loss_epoch, 'val': test_loss}, epoch)            
+            writer.add_scalars('GA', {'train': acc_train, 'val': acc}, epoch)
+            writer.add_scalars('CAA', {'train': class_avg_acc_train, 'val': class_avg_acc} , epoch)
+            
 
             is_better = loss_epoch < prev_loss
             if is_better:
