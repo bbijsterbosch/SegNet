@@ -1,3 +1,4 @@
 outputs
 *.pth
 __pycache__
+runs/train
