@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.checkpoint import checkpoint
+
 class SegNet(nn.Module):
     def __init__(self, input_channels, initial_output_channels, num_classes, kernel_size, pool_kernel_size):
         super(SegNet, self).__init__()
@@ -193,11 +194,9 @@ class Train_Test:
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, momentum=self.momentum)
         self.loss_fn = nn.CrossEntropyLoss().to(self.device)
         
-    def compute_miou(pred, target, num_classes):
+    def compute_miou(self, pred,  target, num_classes):
         #Compute the Intersection over Union (IoU) for each class.
         ious = []
-        pred = pred.view(-1)
-        target = target.view(-1)
 
         for cls in range(num_classes):
             pred_inds = pred == cls
@@ -209,7 +208,7 @@ class Train_Test:
             else:
                 ious.append(float(intersection) / max(union, 1))
         
-        ious = np.arrary(ious)
+        ious = np.array(ious)
         mean_iou = np.nanmean(ious)
 
         return mean_iou
@@ -223,7 +222,7 @@ class Train_Test:
         is_better = True
         prev_loss = float('inf')
         run_epoch = self.epochs
-        writer = SummaryWriter(log_dir='runs/experiment1')
+        writer = SummaryWriter(log_dir='runs/train')
         
         for epoch in range(1, run_epoch + 1):
             sum_loss = 0.0
@@ -241,8 +240,8 @@ class Train_Test:
                 sum_loss += loss.item()
         
                 
-            loss_epoch = sum_loss/j*self.trainloader.batch_size
-            writer.add_scalar('Loss/Train', loss_epoch)
+            loss_epoch = sum_loss/len(self.trainloader)
+            writer.add_scalar('Metrics/Loss/Train', loss_epoch, epoch)
             print('Average loss @ epoch {}: {}'.format(epoch, loss_epoch))
 
             #Evaluate the test set
@@ -261,33 +260,34 @@ class Train_Test:
                     images = images.to(self.device, dtype=torch.float32)
                     labels = labels.to(self.device)
                     output_softmax = self.model(images)
-                    print(output_softmax.size())
+                    
                     loss = self.loss_fn(output_softmax, labels)
                     test_loss += loss.item()
-                    _, predicted = torch.max(output_softmax, 1)
-                    
+                    predicted = torch.argmax(output_softmax, 1)
+                    true_labels = torch.argmax(labels, dim=1)
                     predicted = predicted.view(-1)
-                    labels = labels.view(-1)
-                    total_pixels += labels.size(0)
-                    correct_pixels += (predicted == labels).sum().item()
+                    true_labels = true_labels.view(-1)
+                    total_pixels += true_labels.numel()
+                    correct_pixels += (predicted == true_labels).sum().item()
                     
-                    for cls in range(self.classes):
-                        class_total[cls] += (labels == cls).sum().item()
-                        class_correct[cls] += ((predicted == cls) & (labels == cls)).sum().item()
+                    for c in range(len(self.classes)):
+                        class_total[c] += (true_labels == c).sum().item()
+                        class_correct[c] += ((predicted == c) & (true_labels == c)).sum().item()
                         
-                    pred = predicted.cpu().numpy()
-                    label = labels.cpu().numpy()
-                    iou_scores.append(self.compute_miou(pred, label, self.num_classes))
+                    pred = predicted.cpu()
+                    label = true_labels.cpu()
+                    iou_scores.append(self.compute_miou(pred, label, len(self.classes)))
 
             test_loss /= len(self.testloader)
-            acc = correct / total
-            class_acc = class_correct / class_total
+            acc = correct_pixels / total_pixels
+            class_acc = np.divide(class_correct, class_total, out=np.zeros_like(class_correct, dtype=float), where=class_total!=0)
             class_avg_acc = np.mean(class_acc)
             avg_miou = np.mean(iou_scores)
-            writer.add_scalar('Loss/Test', test_loss, epoch)
-            writer.add_scalar('Global Accuracy', acc, epoch)
-            writer.add_scalar('Class Avg. Accuracy', class_avg_acc, epoch)
-            writer.add_scalar('mIoU', avg_miou, epoch)
+            
+            writer.add_scalars('Loss', {'train': loss_epoch, 'test': test_loss}, epoch)            
+            writer.add_scalar('Metrics/GA/Val', acc, epoch)
+            writer.add_scalar('Metrics/CAA/Val', class_avg_acc, epoch)
+            writer.add_scalar('Metrics/mIoU/Val', avg_miou, epoch)
 
             is_better = loss_epoch < prev_loss
             if is_better:
@@ -298,49 +298,66 @@ class Train_Test:
         self.model.train()
         torch.cuda.empty_cache()
 
-    def eval(self):
+    def test(self):
         self.model.to(self.device)
         self.model.eval()
-        classes = np.load('/home/bas/Robotics/CV/SegNet/CamVidDataSet/CamVid/seg_classes.npy')
+        
+
+        test_loss = 0.0
+        correct_pixels = 0
+        total_pixels = 0
+        iou_scores = []
+        
+        class_correct = np.zeros(len(self.classes))
+        class_total = np.zeros(len(self.classes))
+        classes = self.classes
         for i, data in enumerate(self.trainloader):
             images = data[0].to(self.device, dtype=torch.float32)
-            output = self.model(images)[0,:,:]
+            labels = data[1].to(self.device)
+            output_softmax = self.model(images)
+            loss = self.loss_fn(output_softmax, labels)
+            test_loss += loss.item()
+            predicted = torch.argmax(output_softmax, 1)
+            true_labels = torch.argmax(labels, dim=1)
+            predicted = predicted.view(-1)
+            true_labels = true_labels.view(-1)
+            total_pixels += true_labels.numel()
+            correct_pixels += (predicted == true_labels).sum().item()
+            
+            for c in range(len(self.classes)):
+                class_total[c] += (true_labels == c).sum().item()
+                class_correct[c] += ((predicted == c) & (true_labels == c)).sum().item()
+                
+            pred = predicted.cpu()
+            label = true_labels.cpu()
+            iou_scores.append(self.compute_miou(pred, label, len(self.classes)))
+
+            output = output_softmax[0,:,:]
             output = output.cpu()
             output = output.detach().numpy()
             output = output.squeeze()
-            print(output.shape)
+            
             num_classes, height, width = output.shape
             rgb_image = np.zeros((height, width, 3), dtype=np.uint8)
-            for i in range(height):
-                for j in range(width):
+            for h in range(height):
+                for w in range(width):
                     # Find the class index (the position where the value is 1)
-                    class_idx = np.argmax(output[:,i, j])
+                    class_idx = np.argmax(output[:,h, w])
                     # Get the RGB value for the class index
-                    rgb_image[i, j] = classes[class_idx]
-            plt.imshow(rgb_image)
-            plt.show()
+                    rgb_image[h, w] = classes[class_idx]
+            plt.imsave(f'outputs/test_{i}.png', rgb_image)
+            
+        test_loss /= len(self.testloader)
+        acc = correct_pixels / total_pixels
+        class_acc = np.divide(class_correct, class_total, out=np.zeros_like(class_correct, dtype=float), where=class_total!=0)
+        class_avg_acc = np.mean(class_acc)
+        avg_miou = np.mean(iou_scores)
+        
+        print(f'Average Loss: {test_loss}')
+        print(f'Global Accuracy:{acc}')
+        print(f'Class Average Accuracy: {class_avg_acc}')
+        print(f'mIoU: {avg_miou}')
   
    
     
-# Example usage
-# input_channels = 3
-# initial_output_channels = 64
-# kernel_size = 3
-# pool_kernel_size = 2
-# num_classes = 32
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# model = SegNet(input_channels, initial_output_channels,num_classes, kernel_size, pool_kernel_size)
-# # model.init_vgg16_weigths()
-# # for layer in model.decoder_layers:
-# #     print(layer)
-# model.to(device)
-# # # layers = 0
-# # # for layer in model.encoder_layers:
-# # #     print(layer)
-# # #     layers += 1
-
-# x = torch.randn(1, 3, 32, 32).to(device)
-# # # output = model(x)
-# summary(model, (3,32,32))
-# # print(output.size())
