@@ -97,6 +97,7 @@ class SegNet(nn.Module):
 
         self.kaiming_initialization()
         self.init_vgg16_weigths()
+        
 
     def forward(self, x):
         pool_indices = []
@@ -212,8 +213,9 @@ class Train_Test:
         self.device = device
         self.model = model
         self.classes = classes
+        class_weights = self.compute_class_weights(trainloader, len(classes))
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, momentum=self.momentum)
-        self.loss_fn = nn.CrossEntropyLoss().to(self.device)
+        self.loss_fn = nn.CrossEntropyLoss(weight=class_weights).to(self.device)
         
     def compute_miou(self, pred,  target, num_classes):
         #Compute the Intersection over Union (IoU) for each class.
@@ -234,7 +236,15 @@ class Train_Test:
 
         return mean_iou
     
-
+    def compute_class_weights(self, dataloader, num_classes):
+        counts = np.zeros(num_classes)
+        for _, labels in dataloader:
+            labels = labels.view(-1)
+            for cls in range(num_classes):
+                counts[cls] += (labels == cls).sum().item()
+        weights = 1.0 / (counts + 1e-6)
+        weights = weights / weights.sum() * num_classes
+        return torch.tensor(weights, dtype=torch.float32, device=self.device)
 
     def train(self):
         #Set the optimizer and loss function
@@ -251,6 +261,7 @@ class Train_Test:
             class_total = np.zeros(len(self.classes))
             total_pixels = 0
             correct_pixels = 0
+            
             for j, data in tqdm(enumerate(self.trainloader, 1), total=len(self.trainloader)):
                 images, labels = data
                 images = images.to(self.device, dtype=torch.float32)
@@ -280,7 +291,7 @@ class Train_Test:
             class_acc = np.divide(class_correct, class_total, out=np.zeros_like(class_correct, dtype=float), where=class_total!=0)
             class_avg_acc_train = np.mean(class_acc)
                 
-            loss_epoch = sum_loss/len(self.trainloader)
+            loss_epoch = sum_loss/len(self.trainloader)*j
             
             print('Average loss @ epoch {}: {}'.format(epoch, loss_epoch))
 
@@ -366,19 +377,18 @@ class Train_Test:
             pred = predicted.cpu()
             label = true_labels.cpu()
             iou_scores.append(self.compute_miou(pred, label, len(self.classes)))
-            output = output_softmax[0,:,:]
-            output = output.cpu()
-            output = output.detach().numpy()
             
-            num_classes, height, width = output.shape
-            rgb_image = np.zeros((height, width, 3), dtype=np.uint8)
-            for h in range(height):
-                for w in range(width):
-                    # Find the class index (the position where the value is 1)
-                    class_idx = np.argmax(output[:,h, w])
-                    # Get the RGB value for the class index
+            output = output_softmax[0].cpu().detach().numpy()
+            output = output.reshape(32, 360, 480)
+            output = np.argmax(output, axis=0)
+            print(output.shape)
+            rgb_image = np.zeros((output.shape[0], output.shape[1], 3), dtype=np.uint8)
+            for h in range(output.shape[0]):
+                for w in range(output.shape[1]):
+                    class_idx = output[h, w]
                     rgb_image[h, w] = classes[class_idx]
             plt.imsave(f'outputs/test_{i}.png', rgb_image)
+            
             
         test_loss /= len(self.testloader)
         acc = correct_pixels / total_pixels
