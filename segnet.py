@@ -18,7 +18,7 @@ class SegNet(nn.Module):
         self.pooling_layers = nn.ModuleList()
         self.unpooling_layers = nn.ModuleList()
         self.decoder_layers = nn.ModuleList()
-        self.vgg16 = models.vgg16(pretrained=True)
+        self.vgg16 = models.vgg16(weights='DEFAULT')
         output_channels = initial_output_channels
         
         # Encoder: First 2 blocks with 2 convolutions each
@@ -95,6 +95,9 @@ class SegNet(nn.Module):
         self.decoder_layers.append(nn.ConvTranspose2d(output_channels, num_classes, kernel_size, padding=1))
         self.decoder_layers.append(nn.BatchNorm2d(num_classes))
 
+        self.kaiming_initialization()
+        self.init_vgg16_weigths()
+
     def forward(self, x):
         pool_indices = []
         sizes = []
@@ -160,11 +163,15 @@ class SegNet(nn.Module):
         x_softmax = F.softmax(x, dim=1)
 
         return x_softmax
-    def kaiming_initialization(self, m):
-        if isinstance(m, nn.Conv2d):
-            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
+    def kaiming_initialization(self):
+
+        for i in range(len(self.decoder_layers)):
+            if isinstance(self.decoder_layers[i], nn.ConvTranspose2d):
+                w = self.decoder_layers[i].weight
+                torch.nn.init.kaiming_normal_(w, mode='fan_out', nonlinearity='relu')
+                if self.decoder_layers[i].bias is not None:
+                    b = self.decoder_layers[i].bias
+                    torch.nn.init.constant_(b, 0)
 
     def init_vgg16_weigths(self):
         
@@ -231,14 +238,14 @@ class Train_Test:
 
     def train(self):
         #Set the optimizer and loss function
-        self.model.to(self.device)
-        self.model.train()
+        
         is_better = True
         prev_loss = float('inf')
         run_epoch = self.epochs
         writer = SummaryWriter(log_dir='runs/train')
         
         for epoch in range(1, run_epoch + 1):
+            self.model.train()
             sum_loss = 0.0
             class_correct = np.zeros(len(self.classes))
             class_total = np.zeros(len(self.classes))
@@ -325,11 +332,10 @@ class Train_Test:
                 torch.save(self.model.state_dict(), "model_best.pth")
 
 
-        self.model.train()
-        torch.cuda.empty_cache()
+            
+            torch.cuda.empty_cache()
 
     def test(self):
-        self.model.eval()
         
 
         test_loss = 0.0
@@ -360,11 +366,9 @@ class Train_Test:
             pred = predicted.cpu()
             label = true_labels.cpu()
             iou_scores.append(self.compute_miou(pred, label, len(self.classes)))
-
             output = output_softmax[0,:,:]
             output = output.cpu()
             output = output.detach().numpy()
-            output = output.squeeze()
             
             num_classes, height, width = output.shape
             rgb_image = np.zeros((height, width, 3), dtype=np.uint8)
@@ -387,6 +391,3 @@ class Train_Test:
         print(f'Class Average Accuracy: {class_avg_acc}')
         print(f'mIoU: {avg_miou}')
   
-   
-    
-
