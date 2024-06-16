@@ -160,23 +160,37 @@ class SegNet(nn.Module):
         x_softmax = F.softmax(x, dim=1)
 
         return x_softmax
+    def kaiming_initialization(self, m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
     def init_vgg16_weigths(self):
         
         layer_idx = 0
 
         for i in range(len(self.encoder_layers)):
-            if (isinstance(self.encoder_layers[i], nn.Conv2d) and isinstance(self.vgg16.features[layer_idx], nn.Conv2d)):
-                vgg_layer = self.vgg16.features[layer_idx]
-                assert self.encoder_layers[i].weight.size() == vgg_layer.weight.size()
-                self.encoder_layers[i].weight.data = vgg_layer.weight.data
+            if isinstance(self.encoder_layers[i], nn.Conv2d):
+                # Find the corresponding VGG layer
+                while not isinstance(self.vgg16.features[layer_idx], nn.Conv2d):
+                    layer_idx += 1
 
-                assert self.encoder_layers[i].bias.size() == vgg_layer.bias.size()
-                self.encoder_layers[i].bias.data = vgg_layer.bias.data
-                layer_idx += 2
-                for param in self.encoder_layers[i].parameters():
-                    param.requires_grad = False
-            
-            else:
+                vgg_layer = self.vgg16.features[layer_idx]
+
+                # Copy weights and biases
+                assert self.encoder_layers[i].weight.size() == vgg_layer.weight.size()
+                self.encoder_layers[i].weight.data = vgg_layer.weight.data.clone()
+
+                if vgg_layer.bias is not None:
+                    assert self.encoder_layers[i].bias.size() == vgg_layer.bias.size()
+                    self.encoder_layers[i].bias.data = vgg_layer.bias.data.clone()
+
+                # Freeze parameters
+                self.encoder_layers[i].weight.requires_grad = False
+                if self.encoder_layers[i].bias is not None:
+                    self.encoder_layers[i].bias.requires_grad = False
+
                 layer_idx += 1
             
 
@@ -315,7 +329,6 @@ class Train_Test:
         torch.cuda.empty_cache()
 
     def test(self):
-        self.model.to(self.device)
         self.model.eval()
         
 

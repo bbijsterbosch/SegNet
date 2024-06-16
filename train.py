@@ -26,12 +26,13 @@ def main():
 
     model = segnet.SegNet(input_channels, initial_output_channels, num_classes,kernel_size, pool_kernel_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    summary(model.to(device), (3,32,32))
+    
     if train:
-
+        model.apply(model.kaiming_initialization)
         model.init_vgg16_weigths()
-        path_classes      = "CamVidDataSet/CamVid/seg_classes.npy"
-
+        summary(model.to(device), (3,32,32))
+        
+        path_classes = "CamVidDataSet/CamVid/seg_classes.npy"
         #Get the directory where the training and test images are stored
         path_no_lbl_train = "CamVidDataSet/CamVid/train"
         path_lbl_train   = "CamVidDataSet/CamVid/train_labels"
@@ -45,10 +46,10 @@ def main():
         valset = CamVidLoader(classes, path_no_lbl_test, path_lbl_test, transform=transform)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=7, shuffle=True, num_workers=4)
         valloader = torch.utils.data.DataLoader(valset, batch_size=7, shuffle = True, num_workers=4)
-        trainer_tester = segnet.Train_Test(model, device, trainloader, valloader, classes,  lr=0.1, momentum=0.9, epochs=800) 
+        trainer_tester = segnet.Train_Test(model, device, trainloader, valloader, classes,  lr=0.1, momentum=0.9, epochs=1000) 
         
         trainer_tester.train()
-       
+
     else:
                 
         path_classes = "CamVidDataSet/CamVid/seg_classes.npy"
